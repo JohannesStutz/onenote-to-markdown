@@ -1,0 +1,8 @@
+- Bring readme up to date
+✅ Fix file name characters
+✅ Save to actual Desktop if OneDrive is used
+✅ Fix whitespace in image paths
+- Fix blank lines (in lists?) (seems to be fine)
+- Is the header necessary?
+- Fix image dimensions ({...})
+- Fix some images missing
