@@ -6,6 +6,7 @@ import fitz
 import win32com.client as win32
 import pywintypes
 import traceback
+from tqdm import tqdm
 from xml.etree import ElementTree
 
 # If the user uses OneDrive to sync the Desktop, use the according directory,
@@ -21,11 +22,30 @@ LOGFILE = "onenote_to_markdown.log"  # Set to None to disable logging
 ILLEGAL_WIN_FILENAMES = "CON, PRN, AUX, NUL, COM1, COM2, COM3, COM4, COM5, COM6, COM7, COM8, COM9, LPT1, LPT2, LPT3, LPT4, LPT5, LPT6, LPT7, LPT8, LPT9"
 
 
-def log(message):
-    print(message)
+def log(message, tqdm=None):
+    if tqdm:
+        # Update progress bar description, leave 50 columns space for the bar itself
+        width = os.get_terminal_size().columns
+        tqdm.set_description(truncate(message, width - 50))
+    else:
+        print(message)
     if LOGFILE is not None:
         with open(LOGFILE, "a") as lf:
             lf.write("%s\n" % message)
+
+
+def truncate(string, length, ellipsis="..."):
+    """Truncates a string to a certain `length`,
+    by putting an `ellipsis` in the middle."""
+    if len(string) <= length:
+        return string
+    left = length // 2
+    right = length - left
+    return (
+        string[: left - len(ellipsis) // 2]
+        + ellipsis
+        + string[-right + len(ellipsis) // 2 + len(ellipsis) % 2 :]
+    )
 
 
 def safe_str(name):
@@ -41,7 +61,7 @@ def replace_whitespace(name):
     return name.replace(" ", "_")
 
 
-def extract_pdf_pictures(pdf_path, assets_path, page_name):
+def extract_pdf_pictures(pdf_path, assets_path, page_name, tqdm):
     os.makedirs(assets_path, exist_ok=True)
     image_names = []
     doc = fitz.open(pdf_path)
@@ -52,7 +72,7 @@ def extract_pdf_pictures(pdf_path, assets_path, page_name):
             pix = fitz.Pixmap(doc, xref)
             png_name = f"{replace_whitespace(page_name)}_{str(img_num).zfill(3)}.png"
             png_path = os.path.join(assets_path, png_name)
-            log("Writing png: %s" % png_path)
+            log("Writing png: %s" % png_path, tqdm)
             if pix.n < 5:
                 pix.save(png_path)
             else:
@@ -79,7 +99,7 @@ def fix_image_names(md_path, image_names):
     shutil.move(tmp_path, md_path)
 
 
-def handle_page(onenote, elem, path, i):
+def handle_page(onenote, elem, path, i, tqdm=None):
     full_path = os.path.join(OUTPUT_DIR, path)
     os.makedirs(full_path, exist_ok=True)
     path_assets = os.path.join(full_path, ASSETS_DIR)
@@ -97,14 +117,14 @@ def handle_page(onenote, elem, path, i):
         # Create docx
         onenote.Publish(elem.attrib["ID"], path_docx, win32.constants.pfWord, "")
         # Convert docx to markdown
-        log("Generating markdown: %s" % path_md)
+        log("Generating markdown: %s" % path_md, tqdm)
         os.system(
             f'pandoc.exe -i "{path_docx}" -o "{path_md}" -t markdown-simple_tables-multiline_tables-grid_tables --wrap=none'
         )
         # Create pdf (for the picture assets)
         onenote.Publish(elem.attrib["ID"], path_pdf, 3, "")
         # Output picture assets to folder
-        image_names = extract_pdf_pictures(path_pdf, path_assets, safe_name)
+        image_names = extract_pdf_pictures(path_pdf, path_assets, safe_name, tqdm)
         # Replace image names in markdown file
         fix_image_names(path_md, image_names)
     except pywintypes.com_error as e:
@@ -116,18 +136,18 @@ def handle_page(onenote, elem, path, i):
         os.remove(path_pdf)
 
 
-def handle_element(onenote, elem, path="", i=0):
+def handle_element(onenote, elem, path="", i=0, tqdm=None):
     if elem.tag.endswith("Notebook"):
         hier2 = onenote.GetHierarchy(elem.attrib["ID"], win32.constants.hsChildren, "")
         for i, c2 in enumerate(ElementTree.fromstring(hier2)):
             handle_element(
-                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i
+                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i, tqdm
             )
     elif elem.tag.endswith("Section"):
         hier2 = onenote.GetHierarchy(elem.attrib["ID"], win32.constants.hsPages, "")
         for i, c2 in enumerate(ElementTree.fromstring(hier2)):
             handle_element(
-                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i
+                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i, tqdm
             )
     elif elem.tag.endswith("SectionGroup") and (
         not elem.attrib["name"].startswith("OneNote_RecycleBin") or PROCESS_RECYCLE_BIN
@@ -135,10 +155,10 @@ def handle_element(onenote, elem, path="", i=0):
         hier2 = onenote.GetHierarchy(elem.attrib["ID"], win32.constants.hsSections, "")
         for i, c2 in enumerate(ElementTree.fromstring(hier2)):
             handle_element(
-                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i
+                onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i, tqdm
             )
     elif elem.tag.endswith("Page"):
-        handle_page(onenote, elem, path, i)
+        handle_page(onenote, elem, path, i, tqdm)
 
 
 if __name__ == "__main__":
@@ -148,8 +168,10 @@ if __name__ == "__main__":
         hier = onenote.GetHierarchy("", win32.constants.hsNotebooks, "")
 
         root = ElementTree.fromstring(hier)
-        for child in root:
-            handle_element(onenote, child)
+        pbar = tqdm(root)
+        for child in pbar:
+            pbar.set_description(f"Processing Notebook {child.attrib['name']}")
+            handle_element(onenote, child, tqdm=pbar)
 
     except pywintypes.com_error as e:
         traceback.print_exc()
