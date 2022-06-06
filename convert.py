@@ -1,6 +1,7 @@
 import re
 import os
 import shutil
+from pdb import set_trace
 
 import fitz
 import win32com.client as win32
@@ -9,15 +10,24 @@ import traceback
 from tqdm import tqdm
 from xml.etree import ElementTree
 
+### OPTIONS ###
+PROCESS_RECYCLE_BIN = False
+ASSETS_DIR = "assets"
+OUTPUT_FOLDER = "OneNoteExport"
+KEEP_INTERMEDIATE = True
+FIX_DIMENSIONS = True
+FIX_BACKSLASH = True
+FIX_HEADER = True
+ADD_CONVERSION_TAG = True
+TARGET_NB = "Fliegerei"  # If None, all notebooks will be converted
+
 # If the user uses OneDrive to sync the Desktop, use the according directory,
 # otherwise use the regular desktop.
 ONEDRIVE_DIR = os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop")
 if os.path.exists(ONEDRIVE_DIR):
-    OUTPUT_DIR = os.path.join(ONEDRIVE_DIR, "OneNoteExport")
+    OUTPUT_DIR = os.path.join(ONEDRIVE_DIR, OUTPUT_FOLDER)
 else:
     OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "OneNoteExport")
-ASSETS_DIR = "assets"
-PROCESS_RECYCLE_BIN = False
 LOGFILE = "onenote_to_markdown.log"  # Set to None to disable logging
 ILLEGAL_WIN_FILENAMES = "CON, PRN, AUX, NUL, COM1, COM2, COM3, COM4, COM5, COM6, COM7, COM8, COM9, LPT1, LPT2, LPT3, LPT4, LPT5, LPT6, LPT7, LPT8, LPT9"
 
@@ -85,18 +95,55 @@ def extract_pdf_pictures(pdf_path, assets_path, page_name, tqdm):
     return image_names
 
 
-def fix_image_names(md_path, image_names):
+def clean_pandoc_result(md_path, image_names):
     tmp_path = md_path + ".tmp"
-    i = 0
-    with open(md_path, "r", encoding="utf-8") as f_md:
-        with open(tmp_path, "w", encoding="utf-8") as f_tmp:
-            body_md = f_md.read()
-            for i, name in enumerate(image_names):
-                body_md = re.sub(
-                    "media\/image" + str(i + 1) + "\.[a-zA-Z]+", name, body_md
-                )
-            f_tmp.write(body_md)
+    with open(md_path, "r", encoding="utf-8") as f_md, open(
+        tmp_path, "w", encoding="utf-8"
+    ) as f_tmp:
+        # body_md: str = f_md.read()
+        lines = f_md.readlines()
+        if FIX_HEADER:
+            lines[0] = "# " + lines[0]
+            lines[2] = lines[2].strip() + " " + lines[4]
+            # lines[3] = f"parent::[[{parent}]]"
+            if ADD_CONVERSION_TAG:
+                lines[3] = "#FromOneNote\n"
+            lines[4] = "___"
+        body_md = "".join(lines)
+        # set_trace()
+        body_md = fix_image_names(body_md, image_names)
+        if FIX_DIMENSIONS:
+            body_md = convert_image_dimensions_obsidian(body_md)
+        if FIX_BACKSLASH:
+            body_md = remove_backslashes(body_md)
+        f_tmp.write(body_md)
     shutil.move(tmp_path, md_path)
+
+
+def fix_image_names(body_md, image_names):
+    for i, name in enumerate(image_names):
+        body_md = re.sub(r"media\/image" + str(i + 1) + r"\.[a-zA-Z]+", name, body_md)
+    return body_md
+
+
+def convert_image_dimensions_obsidian(md: str, ppi: int = 96):
+    def replace(result):
+        alt, name, width_in, height_in = (
+            result.group(1),
+            result.group(2),
+            result.group(3),
+            result.group(4),
+        )
+        width_px, height_px = int(float(width_in) * ppi), int(float(height_in) * ppi)
+        return f"![{alt}|{width_px}x{height_px}]({name})"
+
+    return re.sub(
+        r'\!\[(.*)\]\((.*)\){width="(\d+\.\d+)in" height="(\d+\.\d+)in"}', replace, md
+    )
+
+
+def remove_backslashes(body_md):
+    return body_md.replace('\\"', '"').replace("\\'", "'").replace("\\...", "...")
 
 
 def handle_page(onenote, elem, path, i, tqdm=None):
@@ -108,35 +155,46 @@ def handle_page(onenote, elem, path, i, tqdm=None):
     path_docx = safe_path + ".docx"
     path_pdf = safe_path + ".pdf"
     path_md = safe_path + ".md"
-    # Remove temp files if exist
-    if os.path.exists(path_docx):
-        os.remove(path_docx)
-    if os.path.exists(path_pdf):
-        os.remove(path_pdf)
+    # Remove temp files
+    if not KEEP_INTERMEDIATE:
+        try:
+            os.remove(path_docx)
+            os.remove(path_pdf)
+        except OSError:
+            pass
     try:
         # Create docx
-        onenote.Publish(elem.attrib["ID"], path_docx, win32.constants.pfWord, "")
+        if not os.path.exists(path_docx):
+            onenote.Publish(elem.attrib["ID"], path_docx, win32.constants.pfWord, "")
         # Convert docx to markdown
         log("Generating markdown: %s" % path_md, tqdm)
         os.system(
             f'pandoc.exe -i "{path_docx}" -o "{path_md}" -t markdown-simple_tables-multiline_tables-grid_tables --wrap=none'
         )
         # Create pdf (for the picture assets)
-        onenote.Publish(elem.attrib["ID"], path_pdf, 3, "")
+        if not os.path.exists(path_pdf):
+            onenote.Publish(elem.attrib["ID"], path_pdf, 3, "")
         # Output picture assets to folder
         image_names = extract_pdf_pictures(path_pdf, path_assets, safe_name, tqdm)
         # Replace image names in markdown file
-        fix_image_names(path_md, image_names)
+        clean_pandoc_result(path_md, image_names)
     except pywintypes.com_error as e:
         log("!!WARNING!! Page Failed: %s" % path_md)
     # Clean up docx, html
-    if os.path.exists(path_docx):
-        os.remove(path_docx)
-    if os.path.exists(path_pdf):
+    if not KEEP_INTERMEDIATE:
+        try:
+            os.remove(path_docx)
+            os.remove(path_pdf)
+        except OSError:
+            pass
+    # Delete PDF in any way!
+    try:
         os.remove(path_pdf)
+    except OSError:
+        pass
 
 
-def handle_element(onenote, elem, path="", i=0, tqdm=None):
+def handle_element(onenote, elem, path="", i=0, tqdm=None, parent=None):
     if elem.tag.endswith("Notebook"):
         hier2 = onenote.GetHierarchy(elem.attrib["ID"], win32.constants.hsChildren, "")
         for i, c2 in enumerate(ElementTree.fromstring(hier2)):
@@ -170,6 +228,8 @@ if __name__ == "__main__":
         root = ElementTree.fromstring(hier)
         pbar = tqdm(root)
         for child in pbar:
+            if TARGET_NB and TARGET_NB != child.attrib["name"]:
+                continue
             pbar.set_description(f"Processing Notebook {child.attrib['name']}")
             handle_element(onenote, child, tqdm=pbar)
 
