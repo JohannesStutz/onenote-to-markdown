@@ -18,6 +18,7 @@ KEEP_INTERMEDIATE = True
 FIX_DIMENSIONS = True
 FIX_BACKSLASH = True
 FIX_HEADER = True
+REMOVE_NBSP = True
 ADD_CONVERSION_TAG = True
 TARGET_NB = "Fliegerei"  # If None, all notebooks will be converted
 
@@ -116,6 +117,10 @@ def clean_pandoc_result(md_path, image_names):
             body_md = convert_image_dimensions_obsidian(body_md)
         if FIX_BACKSLASH:
             body_md = remove_backslashes(body_md)
+        if REMOVE_NBSP:
+            body_md = remove_nsbp(body_md)
+        body_md = fix_blank_lines(body_md)
+        body_md = convert_crlf_to_lf(body_md)
         f_tmp.write(body_md)
     shutil.move(tmp_path, md_path)
 
@@ -144,6 +149,22 @@ def convert_image_dimensions_obsidian(md: str, ppi: int = 96):
 
 def remove_backslashes(body_md):
     return body_md.replace('\\"', '"').replace("\\'", "'").replace("\\...", "...")
+    # TODO: replace all backslashes except before alphanumeric characters
+
+
+def remove_nsbp(body_md):
+    return body_md.replace("\xa0", "")
+
+
+def convert_crlf_to_lf(body_md):
+    return re.sub(r"\r\n", r"\n", body_md)
+
+
+def fix_blank_lines(body_md):
+    return re.sub(
+        r"\r*\n[ \t]*>?\r*\n(?![|])", r"\n", body_md
+    )  # Remove ALL double blank lines except before tables
+    # return re.sub(r"\r*\n\r*\n([ \t]*)- ", r"\n\1- ", body_md)  # Remove only blank lines in lists
 
 
 def handle_page(onenote, elem, path, i, tqdm=None):
@@ -188,13 +209,13 @@ def handle_page(onenote, elem, path, i, tqdm=None):
         except OSError:
             pass
     # Delete PDF in any way!
-    try:
-        os.remove(path_pdf)
-    except OSError:
-        pass
+    # try:
+    #     os.remove(path_pdf)
+    # except OSError:
+    #     pass
 
 
-def handle_element(onenote, elem, path="", i=0, tqdm=None, parent=None):
+def handle_element(onenote, elem, path="", i=0, tqdm=None, last_elem=None):
     if elem.tag.endswith("Notebook"):
         hier2 = onenote.GetHierarchy(elem.attrib["ID"], win32.constants.hsChildren, "")
         for i, c2 in enumerate(ElementTree.fromstring(hier2)):
@@ -216,7 +237,12 @@ def handle_element(onenote, elem, path="", i=0, tqdm=None, parent=None):
                 onenote, c2, os.path.join(path, safe_str(elem.attrib["name"])), i, tqdm
             )
     elif elem.tag.endswith("Page"):
-        handle_page(onenote, elem, path, i, tqdm)
+        try:
+            if elem.attrib["isSubPage"] == "true":
+                # Create parent directory, but how to find out parent?
+                handle_page(onenote, elem, path, i, tqdm)
+        except KeyError:
+            handle_page(onenote, elem, path, i, tqdm)
 
 
 if __name__ == "__main__":

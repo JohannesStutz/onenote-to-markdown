@@ -1,18 +1,23 @@
+### High priority ###
 - Bring readme up to date
 ✅ Fix file name characters
 ✅ Save to actual Desktop if OneDrive is used
 ✅ Fix whitespace in image paths
-- Fix blank lines (in lists?)
+✅ Fix blank lines (in lists?)
 - Header: make optional, and put in better format (headline, date, parent link, horizontal line)
 ✅ Fix image dimensions ({...}) (Obsidian style: pixel dimension in alt text)
 ✅ Fix some missing images (missing images are in HTML tables or pen input)
-- Fix HTML tables!
-- Refactor code, OOP
-- Add proper tests
 - Better Subfolders, and/or create MOC
+
+### Medium priority ###
+- Fix HTML tables!
 - Get rid of numbers for file names
-✅ Option to convert only one Notebook
+- Option to convert only one Notebook
 ✅ Keep intermediate .docx files for testing
 - Resolve links
-- Use standard logger
 - Is PDF export necessary? Check theohbrothers script for direct Pandoc img export
+
+### Low priority ###
+- Use standard logger
+- Add proper tests
+- Refactor code, OOP
